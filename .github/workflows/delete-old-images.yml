@@ -1,0 +1,18 @@
+name: Delete Container Versions
+on: workflow_dispatch
+
+permissions:
+  packages: write
+  contents: read
+
+jobs:
+  delete_versions:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old container versions
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: 'theorybot'
+          package-type: 'container'
+          min-versions-to-keep: 10
+          delete-only-untagged-versions: 'false'
