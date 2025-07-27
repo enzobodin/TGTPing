@@ -46,8 +46,6 @@ func (app *App) pollStreamStatus() error {
 		return nil
 	}
 
-	//log.Printf("Polling %d streamers for status updates", len(pollingStreamers))
-
 	batchSize := 100
 	for i := 0; i < len(pollingStreamers); i += batchSize {
 		end := i + batchSize
