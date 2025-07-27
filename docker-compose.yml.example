@@ -1,0 +1,33 @@
+services:
+  tgtping:
+    build: .
+    container_name: tgtping
+    restart: unless-stopped
+    ports:
+      - 8085:8080
+    volumes:
+      - tgtping-data:/data
+    env_file:
+      - .env
+    environment:
+      - TZ=UTC
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.tgtping.entrypoints: "websecure"
+      traefik.http.routers.tgtping.rule: "Host(`<URL>`)"
+      traefik.http.routers.tgtping.tls.certresolver: "cfresolver"
+    networks: 
+      - traefik
+volumes:
+  tgtping-data:
+    driver: local
+networks:
+  traefik:
+    external: true
+    name: "traefik"
