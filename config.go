@@ -9,6 +9,13 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const (
+	DefaultPollingInterval = 90 * time.Second
+	MinPollingInterval     = 30 * time.Second
+	DefaultHTTPTimeout     = 10 * time.Second
+	StreamersFilePath      = "/data/streamers.json"
+)
+
 func loadConfig() Config {
 	err := godotenv.Load()
 	if err != nil {
@@ -20,29 +27,18 @@ func loadConfig() Config {
 		log.Fatal("Invalid TELEGRAM_CHAT_ID:", err)
 	}
 
-	oauthURL := os.Getenv("OAUTH_CALLBACK_URL")
-
-	maxWebSocketStreamers := 5
-	if env := os.Getenv("MAX_WEBSOCKET_STREAMERS"); env != "" {
-		if val, err := strconv.Atoi(env); err == nil && val > 0 {
-			maxWebSocketStreamers = val
-		}
-	}
-
-	pollingInterval := 90 * time.Second
+	pollingInterval := DefaultPollingInterval
 	if env := os.Getenv("POLLING_INTERVAL_SECONDS"); env != "" {
-		if val, err := strconv.Atoi(env); err == nil && val >= 30 {
+		if val, err := strconv.Atoi(env); err == nil && val >= int(MinPollingInterval.Seconds()) {
 			pollingInterval = time.Duration(val) * time.Second
 		}
 	}
 
 	return Config{
-		TwitchClientID:        os.Getenv("TWITCH_CLIENT_ID"),
-		TwitchClientSecret:    os.Getenv("TWITCH_CLIENT_SECRET"),
-		TelegramBotToken:      os.Getenv("TELEGRAM_BOT_TOKEN"),
-		TelegramChatID:        chatID,
-		OAuthCallbackURL:      oauthURL,
-		MaxWebSocketStreamers: maxWebSocketStreamers,
-		PollingInterval:       pollingInterval,
+		TwitchClientID:     os.Getenv("TWITCH_CLIENT_ID"),
+		TwitchClientSecret: os.Getenv("TWITCH_CLIENT_SECRET"),
+		TelegramBotToken:   os.Getenv("TELEGRAM_BOT_TOKEN"),
+		TelegramChatID:     chatID,
+		PollingInterval:    pollingInterval,
 	}
 }

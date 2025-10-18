@@ -44,19 +44,14 @@ func (sm *StreamerManager) loadFromFile() {
 		}
 		seenUserIDs[streamer.UserID] = true
 
-		if streamer.Priority == "" {
-			streamer.Priority = "normal"
-		}
-		if streamer.NotificationMode == "" {
-			streamer.NotificationMode = "polling"
-		}
-
 		streamerCopy := streamer
 		sm.streamers[streamerCopy.Username] = &streamerCopy
 	}
 
 	if len(streamers) != len(sm.streamers) {
-		sm.saveToFile()
+		if err := sm.saveToFile(); err != nil {
+			log.Printf("Error saving streamers to file: %v", err)
+		}
 	}
 }
 
@@ -85,21 +80,8 @@ func (sm *StreamerManager) addStreamer(streamer *Streamer) error {
 	sm.mutex.Lock()
 	defer sm.mutex.Unlock()
 
-	if streamer.Priority == "" {
-		streamer.Priority = "normal"
-	}
-	if streamer.NotificationMode == "" {
-		streamer.NotificationMode = "polling"
-	}
-
 	sm.streamers[streamer.Username] = streamer
-	err := sm.saveToFile()
-	if err != nil {
-		log.Printf("Error saving file for streamer %s: %v", streamer.Username, err)
-		return err
-	}
-
-	return nil
+	return sm.saveToFileWithLog(streamer.Username, "saving file for streamer")
 }
 
 func (sm *StreamerManager) removeStreamer(username string) error {
@@ -107,12 +89,14 @@ func (sm *StreamerManager) removeStreamer(username string) error {
 	defer sm.mutex.Unlock()
 
 	delete(sm.streamers, username)
-	err := sm.saveToFile()
-	if err != nil {
-		log.Printf("Error saving file after removing %s: %v", username, err)
+	return sm.saveToFileWithLog(username, "saving file after removing")
+}
+
+func (sm *StreamerManager) saveToFileWithLog(context, action string) error {
+	if err := sm.saveToFile(); err != nil {
+		log.Printf("Error %s %s: %v", action, context, err)
 		return err
 	}
-
 	return nil
 }
 
@@ -126,17 +110,6 @@ func (sm *StreamerManager) getStreamers() []*Streamer {
 	return streamers
 }
 
-func (sm *StreamerManager) getStreamerByUserID(userID string) *Streamer {
-	sm.mutex.RLock()
-	defer sm.mutex.RUnlock()
-	for _, streamer := range sm.streamers {
-		if streamer.UserID == userID {
-			return streamer
-		}
-	}
-	return nil
-}
-
 func (sm *StreamerManager) updateStreamerStatus(userID string, isLive bool) error {
 	sm.mutex.Lock()
 	defer sm.mutex.Unlock()
@@ -148,87 +121,4 @@ func (sm *StreamerManager) updateStreamerStatus(userID string, isLive bool) erro
 		}
 	}
 	return fmt.Errorf("streamer with userID %s not found", userID)
-}
-
-func (sm *StreamerManager) setStreamerPriority(username string, priority string) error {
-	sm.mutex.Lock()
-	defer sm.mutex.Unlock()
-
-	streamer, exists := sm.streamers[username]
-	if !exists {
-		return fmt.Errorf("streamer %s not found", username)
-	}
-
-	streamer.Priority = priority
-	return sm.saveToFile()
-}
-
-func (sm *StreamerManager) assignNotificationModes(maxWebSocketStreamers int) error {
-	sm.mutex.Lock()
-	defer sm.mutex.Unlock()
-
-	highPriorityCount := 0
-	currentWebSocketCount := 0
-	webSocketWithNormalPriority := 0
-	highPriorityInPolling := 0
-
-	for _, streamer := range sm.streamers {
-		if streamer.Priority == "high" {
-			highPriorityCount++
-			if streamer.NotificationMode == "polling" {
-				highPriorityInPolling++
-			}
-		}
-		if streamer.NotificationMode == "websocket" {
-			currentWebSocketCount++
-			if streamer.Priority != "high" {
-				webSocketWithNormalPriority++
-			}
-		}
-	}
-
-	needsReassignment := currentWebSocketCount > maxWebSocketStreamers ||
-		webSocketWithNormalPriority > 0 ||
-		(highPriorityInPolling > 0 && currentWebSocketCount < maxWebSocketStreamers)
-	if !needsReassignment {
-		return nil
-	}
-
-	for _, streamer := range sm.streamers {
-		streamer.NotificationMode = "polling"
-	}
-
-	webSocketSlots := maxWebSocketStreamers
-	for _, streamer := range sm.streamers {
-		if streamer.Priority == "high" && webSocketSlots > 0 {
-			streamer.NotificationMode = "websocket"
-			webSocketSlots--
-		}
-	}
-
-	return sm.saveToFile()
-}
-
-func (sm *StreamerManager) getWebSocketStreamers() []*Streamer {
-	sm.mutex.RLock()
-	defer sm.mutex.RUnlock()
-	var webSocketStreamers []*Streamer
-	for _, streamer := range sm.streamers {
-		if streamer.NotificationMode == "websocket" {
-			webSocketStreamers = append(webSocketStreamers, streamer)
-		}
-	}
-	return webSocketStreamers
-}
-
-func (sm *StreamerManager) getPollingStreamers() []*Streamer {
-	sm.mutex.RLock()
-	defer sm.mutex.RUnlock()
-	var pollingStreamers []*Streamer
-	for _, streamer := range sm.streamers {
-		if streamer.NotificationMode == "polling" {
-			pollingStreamers = append(pollingStreamers, streamer)
-		}
-	}
-	return pollingStreamers
 }

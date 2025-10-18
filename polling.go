@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -41,24 +40,24 @@ func (app *App) stopPollingManager() {
 }
 
 func (app *App) pollStreamStatus() error {
-	pollingStreamers := app.streamerManager.getPollingStreamers()
-	if len(pollingStreamers) == 0 {
+	streamers := app.streamerManager.getStreamers()
+	if len(streamers) == 0 {
 		return nil
 	}
 
 	batchSize := 100
-	for i := 0; i < len(pollingStreamers); i += batchSize {
+	for i := 0; i < len(streamers); i += batchSize {
 		end := i + batchSize
-		if end > len(pollingStreamers) {
-			end = len(pollingStreamers)
+		if end > len(streamers) {
+			end = len(streamers)
 		}
 
-		batch := pollingStreamers[i:end]
+		batch := streamers[i:end]
 		if err := app.pollStreamerBatch(batch); err != nil {
 			log.Printf("Error polling batch %d-%d: %v", i, end-1, err)
 		}
 
-		if end < len(pollingStreamers) {
+		if end < len(streamers) {
 			time.Sleep(1 * time.Second)
 		}
 	}
@@ -73,7 +72,6 @@ func (app *App) pollStreamerBatch(streamers []*Streamer) error {
 
 	var userLogins []string
 	streamerMap := make(map[string]*Streamer)
-
 	for _, streamer := range streamers {
 		userLogins = append(userLogins, streamer.Username)
 		streamerMap[streamer.Username] = streamer
@@ -84,70 +82,27 @@ func (app *App) pollStreamerBatch(streamers []*Streamer) error {
 		return fmt.Errorf("failed to get streams info: %v", err)
 	}
 
-	liveStreamers := make(map[string]bool)
-	for _, stream := range liveStreams {
-		liveStreamers[stream.UserLogin] = true
-
-		streamer := streamerMap[stream.UserLogin]
-		if streamer != nil && !streamer.IsLive {
-			log.Printf("Polling detected stream online: %s (%s)", streamer.DisplayName, streamer.Username)
-
-			streamData := &TwitchStreamResponse{
-				Data: []struct {
-					UserID      string `json:"user_id"`
-					UserLogin   string `json:"user_login"`
-					UserName    string `json:"user_name"`
-					GameName    string `json:"game_name"`
-					Title       string `json:"title"`
-					ViewerCount int    `json:"viewer_count"`
-					StartedAt   string `json:"started_at"`
-				}{stream},
-			}
-
-			if err := app.sendNotification(streamer, streamData); err != nil {
-				log.Printf("Error sending notification for %s: %v", streamer.Username, err)
-			}
-
-			app.streamerManager.updateStreamerStatus(streamer.UserID, true)
-		}
+	liveStreamMap := make(map[string]*TwitchStreamData)
+	for i := range liveStreams {
+		stream := &liveStreams[i]
+		liveStreamMap[stream.UserLogin] = stream
 	}
 
 	for _, streamer := range streamers {
-		if streamer.IsLive && !liveStreamers[streamer.Username] {
-			log.Printf("Polling detected stream offline: %s (%s)", streamer.DisplayName, streamer.Username)
-			app.streamerManager.updateStreamerStatus(streamer.UserID, false)
+		streamData := liveStreamMap[streamer.Username]
+		if err := app.checkAndUpdateStreamerStatus(streamer, streamData, true); err != nil {
+			log.Printf("Error updating streamer status for %s: %v", streamer.Username, err)
 		}
 	}
 
 	return nil
 }
 
-func (app *App) getStreamsInfo(userLogins []string) ([]struct {
-	UserID      string `json:"user_id"`
-	UserLogin   string `json:"user_login"`
-	UserName    string `json:"user_name"`
-	GameName    string `json:"game_name"`
-	Title       string `json:"title"`
-	ViewerCount int    `json:"viewer_count"`
-	StartedAt   string `json:"started_at"`
-}, error) {
-	if err := app.getTwitchAppToken(); err != nil {
-		return nil, err
-	}
-
+func (app *App) getStreamsInfo(userLogins []string) ([]TwitchStreamData, error) {
 	url := "https://api.twitch.tv/helix/streams?user_login=" + strings.Join(userLogins, "&user_login=")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	resp, err := app.makeTwitchAPIRequest(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
 	var streamResp TwitchStreamResponse
-	if err := app.decodeJSONResponse(resp, &streamResp); err != nil {
+	if err := app.callTwitchAPI(url, &streamResp); err != nil {
 		return nil, err
 	}
 

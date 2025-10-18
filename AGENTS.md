@@ -14,17 +14,23 @@
 - **TWITCH_CLIENT_SECRET**: Twitch application client secret
 - **TELEGRAM_BOT_TOKEN**: Telegram bot token from @BotFather
 - **TELEGRAM_CHAT_ID**: Telegram chat ID for notifications
-- **OAUTH_CALLBACK_URL**: Base URL for OAuth callbacks
+- **POLLING_INTERVAL_SECONDS**: Optional polling interval (default: 90s, minimum: 30s)
 
 ## File Structure
 - **config.go**: Configuration loading and environment setup
 - **types.go**: All struct definitions and type declarations
 - **streamer.go**: StreamerManager operations and file persistence
-- **twitch.go**: Twitch API interactions and token management
-- **websocket.go**: EventSub WebSocket handling and subscriptions
+- **twitch.go**: Twitch API interactions and app token management
+- **polling.go**: Polling-based stream monitoring and notifications
 - **telegram.go**: Telegram bot commands and message handling
-- **oauth.go**: OAuth flow and web interface
 - **main.go**: Application initialization and startup
+
+## Architecture
+TGTPing uses a **polling-only architecture** for reliable stream monitoring:
+- **No WebSocket connections** - eliminates connection management complexity
+- **App token authentication** - uses client credentials flow only
+- **Batch API requests** - polls multiple streamers efficiently
+- **Simple state management** - streamers stored in JSON file
 
 ## Code Style Guidelines
 

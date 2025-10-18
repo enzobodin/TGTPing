@@ -9,20 +9,14 @@ import (
 )
 
 func (app *App) sendNotification(streamer *Streamer, streamData *TwitchStreamResponse) error {
-	var message string
+	message := fmt.Sprintf("🔴 %s is now live!\n\n", streamer.DisplayName)
+
 	if streamData != nil && len(streamData.Data) > 0 {
 		stream := streamData.Data[0]
-		message = fmt.Sprintf("🔴 %s is now live!\n\n📺 %s\n🎮 %s\n👥 %d viewers\n\n🔗 https://twitch.tv/%s",
-			streamer.DisplayName,
-			stream.Title,
-			stream.GameName,
-			stream.ViewerCount,
-			streamer.Username)
-	} else {
-		message = fmt.Sprintf("🔴 %s is now live!\n\n🔗 https://twitch.tv/%s",
-			streamer.DisplayName,
-			streamer.Username)
+		message += fmt.Sprintf("📺 %s\n🎮 %s\n👥 %d viewers\n\n", stream.Title, stream.GameName, stream.ViewerCount)
 	}
+
+	message += fmt.Sprintf("🔗 https://twitch.tv/%s", streamer.Username)
 
 	msg := tgbotapi.NewMessage(app.config.TelegramChatID, message)
 	_, err := app.bot.Send(msg)
@@ -62,7 +56,9 @@ func (app *App) handleTelegramCommand(message *tgbotapi.Message) {
 		if r := recover(); r != nil {
 			log.Printf("Panic in command handler: %v", r)
 			msg := tgbotapi.NewMessage(message.Chat.ID, "❌ Internal error processing command. Please try again.")
-			app.bot.Send(msg)
+			if _, err := app.bot.Send(msg); err != nil {
+				log.Printf("Error sending panic recovery message: %v", err)
+			}
 		}
 	}()
 
@@ -79,10 +75,6 @@ func (app *App) handleTelegramCommand(message *tgbotapi.Message) {
 		responseText = app.handleListCommand()
 	case "check":
 		responseText = app.handleCheckCommand()
-	case "priority":
-		responseText = app.handlePriorityCommand(args)
-	case "status":
-		responseText = app.handleStatusCommand()
 	case "help":
 		responseText = app.getHelpText()
 	default:
@@ -100,17 +92,13 @@ func (app *App) handleTelegramCommand(message *tgbotapi.Message) {
 }
 
 func (app *App) handleAddCommand(args string) string {
-	if args == "" {
-		return "Usage: /add <twitch_username>"
+	username, err := validateUsernameArg(args)
+	if err != nil {
+		return err.Error()
 	}
 
-	username := strings.ToLower(strings.TrimSpace(args))
-
-	streamers := app.streamerManager.getStreamers()
-	for _, s := range streamers {
-		if s.Username == username {
-			return fmt.Sprintf("⚠️ %s is already in the notification list", s.DisplayName)
-		}
+	if existingStreamer := app.findStreamerByUsername(username); existingStreamer != nil {
+		return fmt.Sprintf("⚠️ %s is already in the notification list", existingStreamer.DisplayName)
 	}
 
 	streamer, err := app.getTwitchUser(username)
@@ -119,6 +107,7 @@ func (app *App) handleAddCommand(args string) string {
 		return fmt.Sprintf("❌ Error: Could not find Twitch user '%s'. Please check the username and try again.", username)
 	}
 
+	streamers := app.streamerManager.getStreamers()
 	for _, s := range streamers {
 		if s.UserID == streamer.UserID {
 			return fmt.Sprintf("⚠️ %s is already in the notification list (same as %s)", streamer.DisplayName, s.DisplayName)
@@ -128,46 +117,24 @@ func (app *App) handleAddCommand(args string) string {
 	streamInfo, err := app.getStreamInfo(streamer.UserID)
 	if err != nil {
 		log.Printf("Error checking stream status for %s: %v", streamer.Username, err)
-	} else if streamInfo != nil && len(streamInfo.Data) > 0 {
-		streamer.IsLive = true
-	} else {
-		streamer.IsLive = false
 	}
+	streamer.IsLive = streamInfo != nil && len(streamInfo.Data) > 0
 
 	if err := app.streamerManager.addStreamer(streamer); err != nil {
 		log.Printf("Error adding streamer %s: %v", username, err)
 		return fmt.Sprintf("❌ Error adding streamer: %v", err)
 	}
 
-	if err := app.streamerManager.assignNotificationModes(app.config.MaxWebSocketStreamers); err != nil {
-		log.Printf("Error reassigning notification modes: %v", err)
-	}
-
-	go func() {
-		if err := app.ensureWebSocketConnection(); err != nil {
-			log.Printf("Error managing WebSocket connection: %v", err)
-		}
-	}()
-
-	return fmt.Sprintf("✅ Added %s (%s) to notifications (normal priority)", streamer.DisplayName, streamer.Username)
+	return fmt.Sprintf("✅ Added %s (%s) to notifications", streamer.DisplayName, streamer.Username)
 }
 
 func (app *App) handleRemoveCommand(args string) string {
-	if args == "" {
-		return "Usage: /remove <twitch_username>"
+	username, err := validateUsernameArg(args)
+	if err != nil {
+		return strings.ReplaceAll(err.Error(), "/add", "/remove")
 	}
 
-	username := strings.ToLower(strings.TrimSpace(args))
-
-	streamers := app.streamerManager.getStreamers()
-	var removedStreamer *Streamer
-	for _, s := range streamers {
-		if s.Username == username {
-			removedStreamer = s
-			break
-		}
-	}
-
+	removedStreamer := app.findStreamerByUsername(username)
 	if removedStreamer == nil {
 		return fmt.Sprintf("❌ %s is not in the notification list", username)
 	}
@@ -176,18 +143,6 @@ func (app *App) handleRemoveCommand(args string) string {
 		log.Printf("Error removing streamer %s: %v", username, err)
 		return fmt.Sprintf("❌ Error removing streamer: %v", err)
 	}
-
-	app.removeSubscription(removedStreamer.UserID)
-
-	if err := app.streamerManager.assignNotificationModes(app.config.MaxWebSocketStreamers); err != nil {
-		log.Printf("Error reassigning notification modes: %v", err)
-	}
-
-	go func() {
-		if err := app.ensureWebSocketConnection(); err != nil {
-			log.Printf("Error managing WebSocket connection: %v", err)
-		}
-	}()
 
 	return fmt.Sprintf("✅ Removed %s from notifications", removedStreamer.DisplayName)
 }
@@ -200,36 +155,12 @@ func (app *App) handleListCommand() string {
 
 	responseText := "📋 Current streamers:\n\n"
 
-	webSocketCount := 0
-	pollingCount := 0
-
 	for _, streamer := range streamers {
-		status := "🔴"
-		if !streamer.IsLive {
-			status = "⚫"
-		}
-
-		priorityIcon := "⚡"
-		if streamer.Priority != "high" {
-			priorityIcon = "🔹"
-		}
-
-		modeIcon := "🌐"
-		if streamer.NotificationMode == "polling" {
-			modeIcon = "🔄"
-			pollingCount++
-		} else {
-			webSocketCount++
-		}
-
-		responseText += fmt.Sprintf("%s %s %s %s (%s)\n", status, priorityIcon, modeIcon, streamer.DisplayName, streamer.Username)
+		status := map[bool]string{true: "🔴", false: "⚫"}[streamer.IsLive]
+		responseText += fmt.Sprintf("%s %s (%s)\n", status, streamer.DisplayName, streamer.Username)
 	}
 
 	responseText += fmt.Sprintf("\n📊 Total: %d streamers", len(streamers))
-	responseText += fmt.Sprintf("\n🌐 Real-time: %d/%d", webSocketCount, app.config.MaxWebSocketStreamers)
-	responseText += fmt.Sprintf("\n🔄 Polling: %d", pollingCount)
-	responseText += "\n\n⚡ = High priority | 🔹 = Normal priority"
-	responseText += "\n🌐 = Real-time | 🔄 = Polling"
 
 	return responseText
 }
@@ -250,24 +181,23 @@ func (app *App) handleCheckCommand() string {
 			continue
 		}
 
-		isCurrentlyLive := streamInfo != nil && len(streamInfo.Data) > 0
+		var streamData *TwitchStreamData
+		isLive := streamInfo != nil && len(streamInfo.Data) > 0
+		if isLive {
+			streamData = &streamInfo.Data[0]
+		}
 
-		if isCurrentlyLive {
-			stream := streamInfo.Data[0]
+		if streamData != nil {
 			responseText += fmt.Sprintf("🔴 %s is LIVE!\n", streamer.DisplayName)
-			responseText += fmt.Sprintf("   📺 %s\n", stream.Title)
-			responseText += fmt.Sprintf("   🎮 %s\n", stream.GameName)
-			responseText += fmt.Sprintf("   👥 %d viewers\n\n", stream.ViewerCount)
-
-			if !streamer.IsLive {
-				app.streamerManager.updateStreamerStatus(streamer.UserID, true)
-			}
+			responseText += fmt.Sprintf("   📺 %s\n", streamData.Title)
+			responseText += fmt.Sprintf("   🎮 %s\n", streamData.GameName)
+			responseText += fmt.Sprintf("   👥 %d viewers\n\n", streamData.ViewerCount)
 		} else {
 			responseText += fmt.Sprintf("⚫ %s is offline\n", streamer.DisplayName)
+		}
 
-			if streamer.IsLive {
-				app.streamerManager.updateStreamerStatus(streamer.UserID, false)
-			}
+		if err := app.checkAndUpdateStreamerStatus(streamer, streamData, false); err != nil {
+			log.Printf("Error updating streamer status for %s: %v", streamer.Username, err)
 		}
 	}
 
@@ -275,130 +205,41 @@ func (app *App) handleCheckCommand() string {
 	return responseText
 }
 
-func (app *App) handlePriorityCommand(args string) string {
-	parts := strings.Fields(args)
-	if len(parts) < 2 {
-		return "Usage: /priority <username> <high|normal>\n\nExample: /priority ninja high"
-	}
-
-	username := strings.ToLower(strings.TrimSpace(parts[0]))
-	priority := strings.ToLower(strings.TrimSpace(parts[1]))
-
-	if priority != "high" && priority != "normal" {
-		return "❌ Priority must be 'high' or 'normal'"
-	}
-
-	streamers := app.streamerManager.getStreamers()
-	var targetStreamer *Streamer
-	for _, s := range streamers {
-		if s.Username == username {
-			targetStreamer = s
-			break
-		}
-	}
-
-	if targetStreamer == nil {
-		return fmt.Sprintf("❌ %s is not in the notification list. Use /add to add them first.", username)
-	}
-
-	if err := app.streamerManager.setStreamerPriority(username, priority); err != nil {
-		log.Printf("Error setting priority for %s: %v", username, err)
-		return fmt.Sprintf("❌ Error setting priority: %v", err)
-	}
-
-	if err := app.streamerManager.assignNotificationModes(app.config.MaxWebSocketStreamers); err != nil {
-		log.Printf("Error reassigning notification modes: %v", err)
-	}
-
-	go func() {
-		if err := app.ensureWebSocketConnection(); err != nil {
-			log.Printf("Error managing WebSocket connection: %v", err)
-		}
-	}()
-
-	updatedStreamer := app.streamerManager.getStreamerByUserID(targetStreamer.UserID)
-	mode := "polling"
-	if updatedStreamer != nil {
-		mode = updatedStreamer.NotificationMode
-	}
-
-	return fmt.Sprintf("✅ Set %s priority to %s (Mode: %s)", targetStreamer.DisplayName, priority, mode)
-}
-
-func (app *App) handleStatusCommand() string {
-	webSocketStreamers := app.streamerManager.getWebSocketStreamers()
-	pollingStreamers := app.streamerManager.getPollingStreamers()
-
-	responseText := "📊 Notification System Status:\n\n"
-
-	responseText += fmt.Sprintf("🌐 WebSocket (Real-time): %d/%d streamers\n", len(webSocketStreamers), app.config.MaxWebSocketStreamers)
-	if len(webSocketStreamers) > 0 {
-		responseText += "   High-priority streamers:\n"
-		for _, s := range webSocketStreamers {
-			status := "🔴"
-			if !s.IsLive {
-				status = "⚫"
-			}
-			responseText += fmt.Sprintf("   %s %s\n", status, s.DisplayName)
-		}
-	}
-
-	responseText += fmt.Sprintf("\n🔄 Polling (~%ds delay): %d streamers\n", int(app.config.PollingInterval.Seconds()), len(pollingStreamers))
-	if len(pollingStreamers) > 0 {
-		responseText += "   Normal-priority streamers:\n"
-		for _, s := range pollingStreamers {
-			status := "🔴"
-			if !s.IsLive {
-				status = "⚫"
-			}
-			responseText += fmt.Sprintf("   %s %s\n", status, s.DisplayName)
-		}
-	}
-
-	wsStatus := "❌ Disconnected"
-	if app.wsConn != nil && app.sessionID != "" {
-		wsStatus = "✅ Connected"
-	}
-	responseText += fmt.Sprintf("\n🔗 WebSocket Connection: %s\n", wsStatus)
-
-	if app.wsConn == nil {
-		responseText += fmt.Sprintf("\n💡 To enable real-time notifications, visit: %s", app.config.OAuthCallbackURL)
-	}
-
-	return responseText
-}
-
 func (app *App) getHelpText() string {
 	return fmt.Sprintf(`🤖 Twitch Notification Bot Commands:
 
-/add <username> - Add a Twitch streamer to notifications (starts as normal priority)
+/add <username> - Add a Twitch streamer to notifications
 /remove <username> - Remove a streamer from notifications  
-/list - Show all tracked streamers with live status and notification modes
-/priority <username> <high|normal> - Set streamer priority level
-/status - Show notification system status and configuration
+/list - Show all tracked streamers with live status
 /check - Check current live status and update internal state
 /help - Show this help message
 
-🚀 Hybrid Notification System:
-• High-priority streamers: Real-time WebSocket notifications (~2-3s delay)
-• Normal-priority streamers: Polling notifications (~%ds delay)
-• Maximum %d high-priority streamers supported
-
-📊 Priority Levels:
-• High: Uses real-time WebSocket (limited slots)
-• Normal: Uses polling system (unlimited)
-
-⚠️ Note: Real-time notifications require user authentication. 
-Visit %s to authorize the bot with your Twitch account.
+🔄 Polling System:
+• All streamers monitored via polling (~%ds delay)
+• Reliable notification delivery
+• No setup required
 
 Examples:
-/add ninja              # Add ninja (normal priority)
-/priority ninja high    # Upgrade to high priority  
-/add shroud            # Add shroud (normal priority)
-/status                # View system status
+/add ninja              # Add ninja to notifications
+/add shroud            # Add shroud to notifications  
 /list                  # View all streamers
 /remove ninja          # Remove ninja`,
-		int(app.config.PollingInterval.Seconds()),
-		app.config.MaxWebSocketStreamers,
-		app.config.OAuthCallbackURL)
+		int(app.config.PollingInterval.Seconds()))
+}
+
+func (app *App) findStreamerByUsername(username string) *Streamer {
+	streamers := app.streamerManager.getStreamers()
+	for _, s := range streamers {
+		if s.Username == username {
+			return s
+		}
+	}
+	return nil
+}
+
+func validateUsernameArg(args string) (string, error) {
+	if args == "" {
+		return "", fmt.Errorf("usage: /add <twitch_username>")
+	}
+	return strings.ToLower(strings.TrimSpace(args)), nil
 }
